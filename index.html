@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>マルチプレイヤーゲーム</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      background-color: #222;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: white;
+      font-family: sans-serif;
+    }
+    canvas {
+      border: 3px solid #ffffff;
+      background-color: #111;
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="gameCanvas" width="800" height="600"></canvas>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+
+    let players = {};
+
+    socket.on("updatePlayers", (backendPlayers) => {
+      players = backendPlayers;
+      draw();
+    });
+
+    function draw() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      for (const id in players) {
+        const p = players[id];
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = "#ffffff";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+
+    window.addEventListener("keydown", (e) => {
+      if (!socket.id || !players[socket.id]) return;
+
+      let x = players[socket.id].x;
+      let y = players[socket.id].y;
+      const speed = 10;
+
+      if (e.key === "ArrowLeft" || e.key === "a") x -= speed;
+      if (e.key === "ArrowRight" || e.key === "d") x += speed;
+      if (e.key === "ArrowUp" || e.key === "w") y -= speed;
+      if (e.key === "ArrowDown" || e.key === "s") y += speed;
+
+      socket.emit("move", { x, y });
+    });
+  </script>
+</body>
+</html>
