@@ -1,73 +1,430 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>マルチプレイヤーゲーム</title>
-  <style>
-    body {
-      margin: 0;
-      padding: 0;
-      background-color: #222;
-      display: flex;
-      justify-content: center;
-      align-items: center;
-      height: 100vh;
-      color: white;
-      font-family: sans-serif;
-    }
-    canvas {
-      border: 3px solid #ffffff;
-      background-color: #111;
-    }
-  </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ピクセルクエスト Web - チーム対戦＆建築ハクスラ版</title>
+    <style>
+        body {
+            background-color: #1a1a2e;
+            color: #fff;
+            font-family: monospace;
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #gameLayout {
+            display: flex;
+            flex-direction: row;
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        canvas {
+            border: 3px solid #16213e;
+            image-rendering: pixelated;
+        }
+
+        .side-panel {
+            background: #16213e;
+            padding: 10px;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 160px;
+        }
+
+        .palette { display: flex; gap: 4px; margin-top: 5px; }
+        .color-btn { width: 18px; height: 18px; border: none; cursor: pointer; }
+
+        #shopOverlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(22, 33, 62, 0.95);
+            border: 4px solid #e94560;
+            padding: 20px;
+            border-radius: 10px;
+            display: none;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 100;
+        }
+
+        .shop-btn {
+            background: #e94560; color: white; border: none;
+            padding: 8px 12px; cursor: pointer; border-radius: 4px;
+            font-weight: bold;
+        }
+        .shop-btn:disabled { background: #555; cursor: not-allowed; }
+
+        #uiHeader {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+            font-size: 14px;
+        }
+    </style>
+    <script src="/socket.io/socket.io.js"></script>
 </head>
 <body>
 
-  <canvas id="gameCanvas" width="800" height="600"></canvas>
+    <div id="uiHeader">
+        <div id="playerStats">TEAM: - | LV: 1 | HP: 100/100 | EXP: 0 | COINS: 0</div>
+        <div style="font-size: 11px; color: #aaa; margin-top:3px;">
+            [WASD/矢印]: 移動 | [左クリック]: 攻撃 | [B]: 建築モード(右クリックでブロック設置)
+        </div>
+    </div>
 
-  <script src="/socket.io/socket.io.js"></script>
-  <script>
-    const socket = io();
-    const canvas = document.getElementById("gameCanvas");
-    const ctx = canvas.getContext("2d");
+    <div id="gameLayout">
+        <canvas id="gameCanvas" width="750" height="550"></canvas>
 
-    let players = {};
+        <div class="side-panel">
+            <h3>キャラ作成</h3>
+            <canvas id="skinCanvas" width="96" height="96"></canvas>
+            <div class="palette">
+                <button class="color-btn" style="background:#e94560" onclick="currentColor='#e94560'"></button>
+                <button class="color-btn" style="background:#00fff5" onclick="currentColor='#00fff5'"></button>
+                <button class="color-btn" style="background:#ffb400" onclick="currentColor='#ffb400'"></button>
+                <button class="color-btn" style="background:#ffffff" onclick="currentColor='#ffffff'"></button>
+                <button class="color-btn" style="background:#000000" onclick="currentColor='#000000'"></button>
+            </div>
+            <button onclick="applySkin()" style="margin-top:8px; cursor:pointer;">見た目を反映</button>
+            
+            <div style="margin-top: 15px; text-align: center; font-size:12px;">
+                <strong>モード情報:</strong><br>
+                <span id="buildModeStatus" style="color: #ffb400;">建築: OFF</span>
+            </div>
+        </div>
+    </div>
 
-    socket.on("updatePlayers", (backendPlayers) => {
-      players = backendPlayers;
-      draw();
-    });
+    <div id="shopOverlay">
+        <h2>🛠️ 武器屋 (SHOP)</h2>
+        <button id="btn-iron" class="shop-btn" onclick="buyWeapon('iron_sword')">鉄の大剣 (150 C)</button>
+        <button id="btn-bow" class="shop-btn" onclick="buyWeapon('magic_bow')">風の弓 (300 C)</button>
+        <button id="btn-staff" class="shop-btn" onclick="buyWeapon('fire_staff')">爆炎の杖 (500 C)</button>
+        <button onclick="closeShop()" style="margin-top:10px; cursor:pointer;">閉じる</button>
+    </div>
 
-    function draw() {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const socket = io();
 
-      for (const id in players) {
-        const p = players[id];
-        ctx.fillStyle = p.color;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, 20, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = "#ffffff";
-        ctx.lineWidth = 2;
-        ctx.stroke();
-      }
-    }
+        let MAP_SIZE = 2400;
+        let myId = null;
+        let players = {};
+        let mobs = [];
+        let items = [];
+        let blocks = [];
+        let obstacles = [];
+        let shopBuilding = {};
+        let WEAPONS = {};
+        let mousePos = { x: 0, y: 0 };
+        let buildMode = false;
 
-    window.addEventListener("keydown", (e) => {
-      if (!socket.id || !players[socket.id]) return;
+        // スキンエディタ
+        const skinCanvas = document.getElementById('skinCanvas');
+        const skinCtx = skinCanvas.getContext('2d');
+        let skinData = Array(8).fill(null).map(() => Array(8).fill('#e94560'));
+        let currentColor = '#ffffff';
 
-      let x = players[socket.id].x;
-      let y = players[socket.id].y;
-      const speed = 10;
+        function drawEditor() {
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    skinCtx.fillStyle = skinData[r][c];
+                    skinCtx.fillRect(c * 12, r * 12, 12, 12);
+                    skinCtx.strokeStyle = '#333';
+                    skinCtx.strokeRect(c * 12, r * 12, 12, 12);
+                }
+            }
+        }
+        drawEditor();
 
-      if (e.key === "ArrowLeft" || e.key === "a") x -= speed;
-      if (e.key === "ArrowRight" || e.key === "d") x += speed;
-      if (e.key === "ArrowUp" || e.key === "w") y -= speed;
-      if (e.key === "ArrowDown" || e.key === "s") y += speed;
+        skinCanvas.addEventListener('click', (e) => {
+            const rect = skinCanvas.getBoundingClientRect();
+            const c = Math.floor((e.clientX - rect.left) / 12);
+            const r = Math.floor((e.clientY - rect.top) / 12);
+            if (r >= 0 && r < 8 && c >= 0 && c < 8) {
+                skinData[r][c] = currentColor;
+                drawEditor();
+            }
+        });
 
-      socket.emit("move", { x, y });
-    });
-  </script>
+        function applySkin() { socket.emit('updateSkin', skinData); }
+        function buyWeapon(key) { socket.emit('buyWeapon', key); }
+        function closeShop() { document.getElementById('shopOverlay').style.display = 'none'; }
+
+        // キー入力
+        const keys = {};
+        window.addEventListener('keydown', e => {
+            keys[e.code] = true;
+            if (e.code === 'KeyB') {
+                buildMode = !buildMode;
+                document.getElementById('buildModeStatus').innerText = `建築: ${buildMode ? 'ON (右クリック)' : 'OFF'}`;
+                document.getElementById('buildModeStatus').style.color = buildMode ? '#00fff5' : '#ffb400';
+            }
+        });
+        window.addEventListener('keyup', e => keys[e.code] = false);
+
+        canvas.addEventListener('mousemove', e => {
+            const rect = canvas.getBoundingClientRect();
+            mousePos.x = e.clientX - rect.left;
+            mousePos.y = e.clientY - rect.top;
+        });
+
+        // 右クリックコンテキストメニュー無効化（建築に使用）
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (!myId || !players[myId] || players[myId].hp <= 0) return;
+
+            const my = players[myId];
+            const camX = my.x - canvas.width / 2 + 16;
+            const camY = my.y - canvas.height / 2 + 16;
+
+            if (e.button === 0) { // 左クリック：攻撃
+                const angle = Math.atan2(mousePos.y - canvas.height / 2, mousePos.x - canvas.width / 2);
+                socket.emit('playerAttack', { angle });
+            } else if (e.button === 2 && buildMode) { // 右クリック：建築ブロック設置
+                const worldX = mousePos.x + camX;
+                const worldY = mousePos.y + camY;
+                socket.emit('placeBlock', { x: worldX, y: worldY });
+            }
+        });
+
+        // Socket通信
+        socket.on('init', data => {
+            myId = data.id;
+            players = data.players;
+            mobs = data.mobs;
+            obstacles = data.obstacles;
+            shopBuilding = data.shop;
+            MAP_SIZE = data.mapSize;
+            WEAPONS = data.weapons;
+            items = data.items;
+            blocks = data.blocks || [];
+            updateUI();
+        });
+
+        socket.on('newPlayer', p => players[p.id] = p);
+        socket.on('playerMoved', p => { if(players[p.id]) { players[p.id].x = p.x; players[p.id].y = p.y; players[p.id].angle = p.angle; } });
+        socket.on('skinUpdated', data => { if(players[data.id]) players[data.id].skin = data.skin; });
+        socket.on('mobsState', m => mobs = m);
+        socket.on('itemsState', i => items = i);
+        socket.on('blockPlaced', b => blocks.push(b));
+        socket.on('playerHpUpdate', data => { if(players[data.id]) { players[data.id].hp = data.hp; updateUI(); } });
+        socket.on('playerDataUpdate', data => { 
+            if(players[data.id]) Object.assign(players[data.id], data);
+            updateUI();
+        });
+        socket.on('weaponPurchased', data => { alert('武器を購入した！'); });
+        socket.on('playerRespawn', p => { players[p.id] = p; updateUI(); });
+        socket.on('playerDisconnected', id => delete players[id]);
+
+        socket.on('playerAttackStart', data => {
+            if (players[data.id]) {
+                players[data.id].isAttacking = true;
+                players[data.id].angle = data.angle;
+                players[data.id].attackWeapon = data.weaponKey;
+                setTimeout(() => { if (players[data.id]) players[data.id].isAttacking = false; }, 250);
+            }
+        });
+
+        function updateUI() {
+            if (!myId || !players[myId]) return;
+            const p = players[myId];
+            const teamColor = p.team === 'RED' ? '#e74c3c' : '#3498db';
+            document.getElementById('playerStats').innerHTML = 
+                `TEAM: <span style="color:${teamColor};font-weight:bold">${p.team}</span> | LV: ${p.level} | HP: ${Math.floor(p.hp)}/${p.maxHp} | EXP: ${p.exp} | COINS: ${p.coins} C`;
+
+            document.getElementById('btn-iron').disabled = p.coins < 150;
+            document.getElementById('btn-bow').disabled = p.coins < 300;
+            document.getElementById('btn-staff').disabled = p.coins < 500;
+        }
+
+        function update() {
+            if (!myId || !players[myId] || players[myId].hp <= 0) return;
+            const my = players[myId];
+            let moved = false;
+            const speed = 3.2;
+
+            if (keys['KeyW'] || keys['ArrowUp']) { my.y -= speed; moved = true; }
+            if (keys['KeyS'] || keys['ArrowDown']) { my.y += speed; moved = true; }
+            if (keys['KeyA'] || keys['ArrowLeft']) { my.x -= speed; moved = true; }
+            if (keys['KeyD'] || keys['ArrowRight']) { my.x += speed; moved = true; }
+
+            my.angle = Math.atan2(mousePos.y - canvas.height / 2, mousePos.x - canvas.width / 2);
+
+            const inDoor = (my.x > shopBuilding.x + 70 && my.x < shopBuilding.x + 130 &&
+                            my.y > shopBuilding.y + shopBuilding.height - 20 && my.y < shopBuilding.y + shopBuilding.height + 30);
+            
+            if (inDoor) {
+                document.getElementById('shopOverlay').style.display = 'flex';
+            }
+
+            if (moved) {
+                socket.emit('playerMovement', { x: my.x, y: my.y, angle: my.angle });
+            }
+        }
+
+        function draw() {
+            update();
+
+            if (!myId || !players[myId]) {
+                requestAnimationFrame(draw);
+                return;
+            }
+
+            const my = players[myId];
+            const camX = my.x - canvas.width / 2 + 16;
+            const camY = my.y - canvas.height / 2 + 16;
+
+            // フィールド
+            ctx.fillStyle = '#1b4332';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // グリッド
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.04)';
+            ctx.lineWidth = 1;
+            for (let x = -camX % 64; x < canvas.width; x += 64) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for (let y = -camY % 64; y < canvas.height; y += 64) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+
+            // --- 建築ブロック描画 ---
+            blocks.forEach(b => {
+                const bx = b.x - camX;
+                const by = b.y - camY;
+                ctx.fillStyle = b.color;
+                ctx.fillRect(bx, by, 32, 32);
+                ctx.strokeStyle = '#000';
+                ctx.strokeRect(bx, by, 32, 32);
+            });
+
+            // ショップ建物
+            const sx = shopBuilding.x - camX;
+            const sy = shopBuilding.y - camY;
+            ctx.fillStyle = '#8d6e63';
+            ctx.fillRect(sx, sy, shopBuilding.width, shopBuilding.height);
+            ctx.fillStyle = '#d84315';
+            ctx.fillRect(sx - 10, sy - 10, shopBuilding.width + 20, 30);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 16px monospace';
+            ctx.fillText("🛠️ SHOP 道具屋", sx + 30, sy + 50);
+            ctx.fillStyle = '#f1c40f';
+            ctx.fillRect(sx + 70, sy + shopBuilding.height - 20, 60, 20);
+
+            // 自然障害物
+            obstacles.forEach(obs => {
+                const ox = obs.x - camX;
+                const oy = obs.y - camY;
+                ctx.beginPath();
+                ctx.arc(ox, oy, obs.radius, 0, Math.PI * 2);
+                ctx.fillStyle = obs.type === 'tree' ? '#2d6a4f' : '#52796f';
+                ctx.fill();
+            });
+
+            // ドロップアイテム
+            items.forEach(item => {
+                const ix = item.x - camX;
+                const iy = item.y - camY;
+                ctx.beginPath();
+                ctx.arc(ix, iy, 8, 0, Math.PI * 2);
+                ctx.fillStyle = item.type === 'coin' ? '#f1c40f' : '#e74c3c';
+                ctx.fill();
+            });
+
+            // 大量の敵モブ描画
+            mobs.forEach(mob => {
+                if (mob.hp <= 0) return;
+                const mx = mob.x - camX;
+                const myPos = mob.y - camY;
+
+                ctx.fillStyle = mob.type === 'boss' ? '#8e44ad' : (mob.type === 'slime' ? '#2ecc71' : '#e67e22');
+                ctx.fillRect(mx, myPos, mob.size, mob.size);
+
+                ctx.fillStyle = '#000';
+                ctx.fillRect(mx, myPos - 10, mob.size, 6);
+                ctx.fillStyle = '#e74c3c';
+                ctx.fillRect(mx, myPos - 10, (mob.hp / mob.maxHp) * mob.size, 6);
+            });
+
+            // プレイヤー描画（チーム枠線つき）
+            Object.values(players).forEach(p => {
+                if (p.hp <= 0) return;
+                const px = p.x - camX;
+                const py = p.y - camY;
+
+                // チームカラーのオーラ（枠線）
+                ctx.strokeStyle = p.team === 'RED' ? '#e74c3c' : '#3498db';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(px - 2, py - 2, 36, 36);
+
+                if (p.skin) {
+                    for (let r = 0; r < 8; r++) {
+                        for (let c = 0; c < 8; c++) {
+                            ctx.fillStyle = p.skin[r][c];
+                            ctx.fillRect(px + c * 4, py + r * 4, 4, 4);
+                        }
+                    }
+                } else {
+                    ctx.fillStyle = '#00fff5';
+                    ctx.fillRect(px, py, 32, 32);
+                }
+
+                // HPバー
+                ctx.fillStyle = '#000';
+                ctx.fillRect(px, py - 12, 32, 4);
+                ctx.fillStyle = '#2ecc71';
+                ctx.fillRect(px, py - 12, (p.hp / p.maxHp) * 32, 4);
+
+                // 攻撃演出
+                if (p.isAttacking) {
+                    const wData = WEAPONS[p.attackWeapon || 'wood_sword'] || WEAPONS.wood_sword;
+                    ctx.save();
+                    ctx.translate(px + 16, py + 16);
+
+                    ctx.fillStyle = 'rgba(241, 196, 15, 0.3)';
+                    ctx.strokeStyle = wData.color;
+                    ctx.lineWidth = 4;
+
+                    if (wData.shape === 'circle') {
+                        ctx.beginPath();
+                        ctx.arc(0, 0, wData.range, 0, Math.PI * 2);
+                        ctx.fill(); ctx.stroke();
+                    } else if (wData.shape === 'arc') {
+                        const halfA = (wData.angleDeg / 2) * (Math.PI / 180);
+                        ctx.beginPath();
+                        ctx.moveTo(0, 0);
+                        ctx.arc(0, 0, wData.range, p.angle - halfA, p.angle + halfA);
+                        ctx.closePath();
+                        ctx.fill(); ctx.stroke();
+                    } else if (wData.shape === 'line') {
+                        ctx.rotate(p.angle);
+                        ctx.fillRect(0, -wData.width / 2, wData.range, wData.width);
+                        ctx.strokeRect(0, -wData.width / 2, wData.range, wData.width);
+                    }
+
+                    ctx.restore();
+                }
+            });
+
+            requestAnimationFrame(draw);
+        }
+
+        draw();
+    </script>
 </body>
 </html>
